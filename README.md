@@ -1,4 +1,4 @@
-# PoolVoice — the fund that reads the room
+# PoolVoice: the fund that reads the room
 
 An AI-governed community fund on GenLayer. Sponsors fill a shared pool with
 GEN, builders submit funding proposals, and AI validators score every proposal
@@ -22,7 +22,7 @@ hidden formula.
    public number, and proposal amounts are reserved against it while they are
    open.
 2. **Builders make the ask.** `create_proposal` takes a title, a description
-   (what gets delivered and who benefits), and a GEN amount — minimum 0.01.
+   (what gets delivered and who benefits), and a GEN amount. Minimum 0.01.
 3. **AI scores the batch.** When a resolve runs, validators execute the same
    scoring prompt over the selected proposals and must agree on the result
    before anything moves. Scores run 0 to 1.
@@ -69,7 +69,7 @@ The contract has two test layers:
 
 - **Direct mode** (`tests/direct/test_pool_voice.py`) runs the contract in a
   local VM and covers deposits, proposal guards, cancellation, proportional
-  allocation, and pagination — 17 tests.
+  allocation, and pagination. 17 tests.
 - **Integration** (`tests/integration/test_pool_voice.py`) deploys to StudioNet
   and exercises the real consensus path: sponsor deposit, proposal from a
   second wallet, resolve with payout, and cancellation.
@@ -96,5 +96,5 @@ frontend-poolvoice/            Vite + React app (the live site)
 
 - StudioNet GEN is valueless; the mechanics are the point.
 - Scores are stored as strings (for example `"0.85"`) because calldata floats
-  are not a thing here — the allocation math converts and clamps them.
+  are not a thing here. The allocation math converts and clamps them.
 - Deposits are payable; every other write reverts if you attach value.

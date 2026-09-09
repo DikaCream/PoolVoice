@@ -96,7 +96,7 @@ export function Proposals() {
           <p className="empty-title">Nothing here yet.</p>
           <p>
             The pool is waiting for its first ask.{" "}
-            <Link to="/submit">Submit a proposal</Link> — it takes two fields and
+            <Link to="/submit">Submit a proposal</Link>. It takes two fields and
             a transaction.
           </p>
         </div>

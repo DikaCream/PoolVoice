@@ -26,7 +26,7 @@ def test_deploy_and_seed():
     assert tx_execution_succeeded(receipt), receipt
     print("pool funded with 5 GEN: OK")
 
-    # Proposal 1 — OPEN, buyable... er, visible on the board.
+    # Proposal 1: OPEN, visible on the board for visitors.
     contract = contract.connect(proposer)
     receipt = contract.create_proposal(
         args=[
@@ -40,7 +40,7 @@ def test_deploy_and_seed():
     assert tx_execution_succeeded(receipt), receipt
     print("proposal 1 (OPEN, requests 2 GEN): OK")
 
-    # Proposal 2 — a second open proposal for variety.
+    # Proposal 2: a second open proposal for variety.
     receipt = contract.create_proposal(
         args=[
             "Community testnet faucet top-up",
@@ -53,7 +53,7 @@ def test_deploy_and_seed():
     assert tx_execution_succeeded(receipt), receipt
     print("proposal 2 (OPEN, requests 1 GEN): OK")
 
-    # Proposal 3 — resolved with a high score, funds paid out. This shows the
+    # Proposal 3: resolved with a high score, funds paid out. This shows the
     # full lifecycle: money actually moved to a proposer.
     receipt = contract.create_proposal(
         args=[

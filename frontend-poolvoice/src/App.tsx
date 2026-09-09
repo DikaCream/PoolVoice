@@ -36,14 +36,14 @@ function Footer() {
     <footer className="site-foot">
       <div className="foot-inner">
         <p>
-          PoolVoice — an AI-governed community fund on GenLayer. Contract{" "}
+          PoolVoice is an AI-governed community fund on GenLayer. Contract{" "}
           <a href={EXPLORER_ADDR(CONTRACT_ADDRESS)} target="_blank" rel="noreferrer">
             {shortAddr(CONTRACT_ADDRESS)}
           </a>{" "}
           on StudioNet.
         </p>
         <p className="foot-fine">
-          Demo network. GEN here has no value — the mechanics are the point.
+          Demo network. GEN here has no value. The mechanics are the point.
         </p>
       </div>
     </footer>

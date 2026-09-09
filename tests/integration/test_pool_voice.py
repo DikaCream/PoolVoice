@@ -57,7 +57,7 @@ def test_deposit_create_resolve_lifecycle():
     assert listed[0]["status"] == "OPEN"
     pid = int(listed[0]["id"])
 
-    # Resolve from an explicit score — money moves proportionally.
+    # Resolve from an explicit score. Money moves proportionally.
     contract = contract.connect(sponsor)
     receipt = contract.resolve_proposals(
         args=[[pid], ["0.85"]],

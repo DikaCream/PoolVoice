@@ -1,5 +1,5 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-"""PoolVoice — AI-governed community fund.
+"""PoolVoice: AI-governed community fund.
 
 A community pool accepts GEN deposits. Anyone submits a funding proposal
 with a title, description, and requested amount. An AI agent scores every

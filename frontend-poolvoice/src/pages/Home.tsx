@@ -37,7 +37,7 @@ export function Home() {
         </h1>
         <p className="hero-sub">
           Sponsors fill a shared pool. Builders submit funding proposals. AI
-          validators score every proposal on community benefit and feasibility —
+          validators score every proposal on community benefit and feasibility,
           and the money splits by the scores. No committee, no backroom, no
           vote-buying. Every score and every line of reasoning lands on-chain.
         </p>
@@ -80,7 +80,7 @@ export function Home() {
             <p>
               Anyone can deposit GEN. The first depositor is recorded as the
               pool's sponsor; everyone after just grows the pot. The pool is a
-              public number — you can watch it move.
+              public number. You can watch it move.
             </p>
           </li>
           <li className="step">
@@ -105,7 +105,7 @@ export function Home() {
             <span className="step-num">4</span>
             <h3>The pool splits by the scores</h3>
             <p>
-              Funded proposals are paid proportionally to their score — a 0.9
+              Funded proposals are paid proportionally to their score. A 0.9
               takes home twice a 0.45's share. Everything below the bar gets
               nothing, and the reasoning for every decision stays on-chain.
             </p>
@@ -136,7 +136,7 @@ export function Home() {
             <h3>Small money, real speed</h3>
             <p>
               The pool is built for many modest payouts, not one giant prize.
-              Submit on Tuesday, get scored the same week — for the cost of a
+              Submit on Tuesday, get scored the same week, for the cost of a
               transaction.
             </p>
           </div>

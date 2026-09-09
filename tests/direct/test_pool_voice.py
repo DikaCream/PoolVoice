@@ -1,4 +1,4 @@
-"""Direct-mode tests for PoolVoice — AI-governed DAO fund."""
+"""Direct-mode tests for PoolVoice, the AI-governed DAO fund."""
 import json
 from tests.direct.conftest import to_hex
 

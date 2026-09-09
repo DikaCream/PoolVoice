@@ -25,9 +25,9 @@ export function Submit() {
 
   function validate(): string | null {
     if (title.trim().length < 1 || title.trim().length > 200)
-      return "Give the proposal a title — 1 to 200 characters.";
+      return "Give the proposal a title. 1 to 200 characters.";
     if (description.trim().length < 1 || description.trim().length > 2000)
-      return "Describe the work — 1 to 2000 characters.";
+      return "Describe the work. 1 to 2000 characters.";
     const n = Number(amount);
     if (!Number.isFinite(n) || n <= 0) return "Enter a valid GEN amount.";
     if (n < MIN_AMOUNT) return "The minimum ask is 0.01 GEN.";
@@ -54,7 +54,7 @@ export function Submit() {
       await contract.waitForReceipt(hash);
       setFeedback({
         kind: "ok",
-        text: "Confirmed. Your proposal is on the board — validators score open proposals in batches.",
+        text: "Confirmed. Your proposal is on the board. Validators score open proposals in batches.",
         tx: hash,
       });
       setTitle("");
@@ -204,7 +204,7 @@ export function Submit() {
 
       <p className="fineprint">
         Scoring happens when anyone triggers a resolve on a batch of open
-        proposals — the AI scores every proposal in the batch on community
+        proposals. The AI scores every proposal in the batch on community
         benefit, feasibility, and alignment, and funded proposals are paid
         proportionally. Read the current board on the{" "}
         <Link to="/proposals">proposals page</Link>.
