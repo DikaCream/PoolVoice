@@ -2,10 +2,12 @@
 """PoolVoice: AI-governed community fund.
 
 A community pool accepts GEN deposits. Anyone submits a funding proposal
-with a title, description, and requested amount. An AI agent scores every
-active proposal on community benefit, feasibility, and alignment (0-1),
-then funds are allocated proportionally. All AI reasoning is stored on-chain
-for full transparency.
+with a title, description, and requested amount. Validators run the same
+prompt over every open proposal and score each one on community benefit,
+feasibility, and alignment (0-1), reach consensus on the scores through the
+comparative equivalence principle, then funds are allocated proportionally,
+capped by each proposal's requested amount. All AI reasoning is stored
+on-chain for full transparency.
 """
 from genlayer import *
 from dataclasses import dataclass
@@ -19,6 +21,8 @@ CANCELLED = "CANCELLED"
 
 GEN_ONE = 10 ** 18
 MIN_PROPOSAL_GEN = GEN_ONE // 100  # 0.01 GEN
+FUNDING_THRESHOLD = 0.5            # score must be above this to receive funds
+MAX_REASON_CHARS = 500
 
 # ------------------------------------------------------------- data models
 @allow_storage
@@ -145,89 +149,142 @@ class PoolVoice(gl.Contract):
     # -------------------------------------------------- resolve with AI
     @gl.public.write
     def resolve_proposals_ai(self, ids: list[u256]) -> None:
-        """Resolve proposals using AI sentiment scoring."""
+        """Resolve proposals using validator-backed AI scoring.
+
+        Any caller may trigger this; the scores come from the validators
+        running the same prompt and reaching consensus, never from the
+        caller. Every id must be unique, exist, and still be open. The AI
+        must return exactly one bounded score (0-1) per requested id, and
+        each payout is capped by the proposal's requested amount.
+        """
         if len(ids) == 0:
             raise gl.vm.UserError("no proposals to resolve")
         budget = int(self.pool.balance)
         if budget == 0:
             raise gl.vm.UserError("pool is empty")
 
-        context_parts = []
+        # Validate ids up front: unique, in range, all still open.
+        wanted: set[int] = set()
+        targets: dict[int, Proposal] = {}
         for pid in ids:
-            p = self._get(pid)
+            key = int(pid)
+            if key in wanted:
+                raise gl.vm.UserError("duplicate proposal id")
+            wanted.add(key)
+            if key < 1 or key > int(self.pool.total_proposals):
+                raise gl.vm.UserError("proposal not found")
+            p = self.proposals[u256(key)]
             if p.status != OPEN:
-                raise gl.vm.UserError(f"proposal #{pid} not open")
+                raise gl.vm.UserError("proposal not open")
+            targets[key] = p
+
+        context_parts = []
+        for key in wanted:
+            p = targets[key]
             context_parts.append(
-                f"#{pid} | {p.title}\n{p.description}\nRequested: {int(p.amount) / GEN_ONE} GEN"
+                f"#{key} | {p.title}\n{p.description}\nRequested: {int(p.amount) / GEN_ONE} GEN"
             )
         context = "\n---\n".join(context_parts)
 
         prompt = (
             "You are a DAO governance AI. Score each proposal 0-1 on community benefit, "
             "feasibility, and alignment with the open-source AI ecosystem. "
-            "Return JSON array: [{\"id\": <int>, \"score\": <float 0-1>, \"reasoning\": \"<str>\"}]. "
-            "Be strict.\n\nProposals:\n" + context
+            "Return STRICT JSON only, no prose, no markdown fences: an object mapping "
+            "every proposal id to its score, of the form "
+            '{"<id>": {"score": <float 0-1>, "reasoning": "<str>"}}. '
+            "One entry per proposal, every id exactly once. Be strict. "
+            "Proposals:\n" + context
         )
 
         def do_evaluate() -> str:
-            return gl.nondet.exec_prompt(prompt)
+            # Text format on purpose: the raw LLM text crosses the WASM boundary
+            # as a string (calldata-safe). JSON scores parsed here stay inside
+            # the VM and are re-serialized into the canonical string below.
+            try:
+                raw = gl.nondet.exec_prompt(prompt)
+            except Exception:
+                raw = None
+            if isinstance(raw, str):
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start >= 0 and end > start:
+                    raw = raw[start : end + 1]
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    data = {"error": "unparseable"}
+            elif raw is None:
+                data = {"error": "unparseable"}
+            else:
+                data = raw
+            return json.dumps(data, sort_keys=True)
 
-        llm_result = gl.eq_principle.strict_eq(do_evaluate)
-        if isinstance(llm_result, str):
-            evaluations = json.loads(llm_result)
-        elif isinstance(llm_result, list):
-            evaluations = llm_result
-        elif isinstance(llm_result, dict):
-            evaluations = [llm_result]
-        else:
+        principle = (
+            "Both answers are AI funding scores for the same set of proposals. "
+            "They are equivalent if and only if, for every proposal id, both answers "
+            "agree on whether the score is above 0.5 (funded) or at or below 0.5 "
+            "(not funded), both answers cover exactly the same set of proposal ids, "
+            "and neither answer gives a score outside 0-1. Exact score values and the "
+            "reasoning text may differ slightly. If either answer is an error object, "
+            "they are equivalent only if both are."
+        )
+
+        result = gl.eq_principle.prompt_comparative(do_evaluate, principle)
+        try:
+            evaluations = json.loads(str(result))
+        except Exception:
             raise gl.vm.UserError("AI returned invalid result")
-        if not isinstance(evaluations, list) or len(evaluations) == 0:
-            raise gl.vm.UserError("AI returned invalid result")
 
-        self._allocate(ids, evaluations, budget)
-
-    # -------------------------------------------------- resolve manually
-    @gl.public.write
-    def resolve_proposals(self, ids: list[u256], scores: list[str], reasoning: str = "") -> None:
-        """Resolve proposals with explicit scores (for direct testing / manual override)."""
-        if len(ids) == 0:
-            raise gl.vm.UserError("no proposals to resolve")
-        if len(ids) != len(scores):
-            raise gl.vm.UserError("ids and scores length mismatch")
-        budget = int(self.pool.balance)
-        if budget == 0:
-            raise gl.vm.UserError("pool is empty")
-
-        evaluations = []
-        for i, pid in enumerate(ids):
-            evaluations.append({
-                "id": int(pid),
-                "score": float(scores[i]),
-                "reasoning": reasoning,
-            })
-
-        self._allocate(ids, evaluations, budget)
+        self._allocate(ids, evaluations, budget, targets)
 
     # -------------------------------------------------- internal allocate
-    def _allocate(self, ids: list[u256], evaluations: list, budget: int) -> None:
-        scored: list[tuple[int, float, str]] = []
+    def _allocate(
+        self,
+        ids: list[u256],
+        evaluations: dict,
+        budget: int,
+        targets: dict[int, Proposal],
+    ) -> None:
+        if not isinstance(evaluations, dict) or len(evaluations) == 0:
+            raise gl.vm.UserError("AI returned invalid result")
+        if len(evaluations) != len(ids):
+            raise gl.vm.UserError("AI must score every proposal exactly once")
+
+        by_id: dict[int, tuple[float, str]] = {}
+        for key_raw, ev in evaluations.items():
+            try:
+                pid = int(key_raw)
+            except Exception:
+                raise gl.vm.UserError("AI returned invalid result")
+            if pid in by_id or pid not in targets:
+                raise gl.vm.UserError("AI returned invalid result")
+            if not isinstance(ev, dict):
+                raise gl.vm.UserError("AI returned invalid result")
+            try:
+                score = float(ev.get("score"))
+            except Exception:
+                raise gl.vm.UserError("AI returned invalid result")
+            if score != score or score > 1.0 or score < 0.0:
+                raise gl.vm.UserError("AI score out of range")
+            reasoning = str(ev.get("reasoning", ""))[:MAX_REASON_CHARS]
+            by_id[pid] = (score, reasoning)
+
         total_score = 0.0
-        for ev in evaluations:
-            pid = ev["id"]
-            score = float(ev["score"])
-            reasoning = str(ev.get("reasoning", ""))
-            p = self._get(pid)
-            p.score = str(score)
-            p.reasoning = reasoning
-            if score > 0.5:
-                scored.append((pid, score, reasoning))
+        for key in targets:
+            score, _ = by_id[key]
+            if score > FUNDING_THRESHOLD:
                 total_score += score
 
-        for pid, score, reasoning in scored:
-            p = self._get(pid)
-            share = int(budget * score / total_score) if total_score > 0 else 0
-            if share > int(self.pool.balance):
-                share = int(self.pool.balance)
+        for key in targets:
+            p = targets[key]
+            score, reasoning = by_id[key]
+            p.score = str(score)
+            p.reasoning = reasoning
+            share = 0
+            if total_score > 0 and score > FUNDING_THRESHOLD:
+                share = int(budget * score / total_score)
+                share = min(share, int(p.amount))            # cap by requested amount
+                share = min(share, int(self.pool.balance))   # cap by remaining pool
             if share > 0:
                 p.funded = u256(share)
                 self.pool.balance = u256(int(self.pool.balance) - share)
@@ -236,24 +293,11 @@ class PoolVoice(gl.Contract):
             p.status = RESOLVED
             p.resolved_at = u256(self._now())
             ProposalResolved(
-                u256(int(pid)),
-                score=str(p.score),
+                u256(key),
+                score=p.score,
                 funded=int(p.funded),
                 reasoning=reasoning,
             ).emit()
-
-        for ev in evaluations:
-            pid = ev["id"]
-            p = self._get(pid)
-            if p.status != RESOLVED:
-                p.status = RESOLVED
-                p.resolved_at = u256(self._now())
-                ProposalResolved(
-                    u256(int(pid)),
-                    score=str(p.score),
-                    funded=0,
-                    reasoning=str(p.reasoning),
-                ).emit()
 
     # -------------------------------------------------- views
     @gl.public.view

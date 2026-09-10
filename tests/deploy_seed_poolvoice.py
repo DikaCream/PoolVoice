@@ -26,7 +26,7 @@ def test_deploy_and_seed():
     assert tx_execution_succeeded(receipt), receipt
     print("pool funded with 5 GEN: OK")
 
-    # Proposal 1: OPEN, visible on the board for visitors.
+    # Proposal 1 — OPEN, buyable... er, visible on the board.
     contract = contract.connect(proposer)
     receipt = contract.create_proposal(
         args=[
@@ -40,7 +40,7 @@ def test_deploy_and_seed():
     assert tx_execution_succeeded(receipt), receipt
     print("proposal 1 (OPEN, requests 2 GEN): OK")
 
-    # Proposal 2: a second open proposal for variety.
+    # Proposal 2 — a second open proposal for variety.
     receipt = contract.create_proposal(
         args=[
             "Community testnet faucet top-up",
@@ -53,25 +53,37 @@ def test_deploy_and_seed():
     assert tx_execution_succeeded(receipt), receipt
     print("proposal 2 (OPEN, requests 1 GEN): OK")
 
-    # Proposal 3: resolved with a high score, funds paid out. This shows the
-    # full lifecycle: money actually moved to a proposer.
-    receipt = contract.create_proposal(
-        args=[
-            "Public good: open-source SDK examples repo",
-            "A maintained repository of minimal, working GenLayer examples "
-            "(one contract pattern per folder) that already exists and is "
-            "public. This round funds its next three months of upkeep.",
-            1 * GEN,
-        ],
-    ).transact(wait_interval=10000, wait_retries=15)
-    assert tx_execution_succeeded(receipt), receipt
+    # Proposal 3 — resolved through the validator-backed AI path, funds paid
+    # out. This shows the full lifecycle: money actually moved to a proposer.
+    # The score comes from the validators, so keep trying new proposals until
+    # one clears the funding threshold.
+    resolved_pid = None
+    for attempt in range(3):
+        pid = 3 + attempt
+        receipt = contract.create_proposal(
+            args=[
+                "Public good: open-source SDK examples repo",
+                "A maintained repository of minimal, working GenLayer examples "
+                "(one contract pattern per folder) that already exists and is "
+                "public. This round funds its next three months of upkeep.",
+                1 * GEN,
+            ],
+        ).transact(wait_interval=10000, wait_retries=15)
+        assert tx_execution_succeeded(receipt), receipt
 
-    receipt = contract.resolve_proposals(
-        args=[[3], ["0.9"]],
-    ).transact(wait_interval=10000, wait_retries=15)
-    assert tx_execution_succeeded(receipt), receipt
-    p3 = contract.get_proposal(args=[3]).call()
-    print(f"proposal 3 resolved: score={p3['score']} funded={int(p3['funded'])/GEN} GEN")
+        receipt = contract.resolve_proposals_ai(
+            args=[[pid]],
+        ).transact(wait_interval=10000, wait_retries=30)
+        assert tx_execution_succeeded(receipt), receipt
+        p = contract.get_proposal(args=[pid]).call()
+        print(
+            f"proposal {pid} resolved via AI: score={p['score']} "
+            f"funded={int(p['funded'])/GEN} GEN reasoning={p['reasoning'][:60]!r}"
+        )
+        if int(p["funded"]) > 0:
+            resolved_pid = pid
+            break
+    assert resolved_pid is not None, "no proposal cleared the funding threshold"
 
     pool = contract.get_pool(args=[]).call()
     print(

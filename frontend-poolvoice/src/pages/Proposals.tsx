@@ -17,6 +17,7 @@ export function Proposals() {
   const [filter, setFilter] = useState<Filter>("ALL");
   const [error, setError] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState<number | null>(null);
+  const [resolveBusy, setResolveBusy] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -50,6 +51,23 @@ export function Proposals() {
     }
   }
 
+  async function handleResolve() {
+    const open = proposals?.filter((p) => p.status === "OPEN") ?? [];
+    if (open.length === 0) return;
+    setResolveBusy(true);
+    setError(null);
+    try {
+      const hash = await contract.resolveProposalsAI(open.map((p) => p.id));
+      await contract.waitForReceipt(hash);
+      await load();
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setResolveBusy(false);
+    }
+  }
+
+  const openCount = proposals?.filter((p) => p.status === "OPEN").length ?? 0;
   const shown = proposals?.filter((p) => filter === "ALL" || p.status === filter) ?? [];
 
   return (
@@ -79,6 +97,21 @@ export function Proposals() {
           </button>
         ))}
       </nav>
+
+      <div className="resolve-row">
+        <p className="resolve-note">
+          {openCount > 0
+            ? `${openCount} open proposal${openCount === 1 ? "" : "s"} waiting for a score.`
+            : "All proposals have been scored."}
+        </p>
+        <button
+          className="btn btn-ghost"
+          disabled={openCount === 0 || resolveBusy}
+          onClick={handleResolve}
+        >
+          {resolveBusy ? "Scoring…" : "Score with AI"}
+        </button>
+      </div>
 
       {error && (
         <div className="notice notice-err" role="alert">

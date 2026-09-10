@@ -6,7 +6,7 @@ export const RPC_URL = (import.meta.env.VITE_RPC_URL as string) || "";
 /** Deployed PoolVoice contract on GenLayer StudioNet. */
 export const CONTRACT_ADDRESS =
   (import.meta.env.VITE_CONTRACT_ADDRESS as string) ||
-  "0xF7351672C3502ba922954eedB932Aeee099E4607";
+  "0xff32C5E21295CdEa8C982E0aC9e358eF1FC526a8";
 
 export const STUDIONET_CHAIN_ID = 777;
 export const STUDIONET_CHAIN_ID_HEX = "0x309";

@@ -67,9 +67,9 @@ export class PoolVoice {
     return this.write("cancel_proposal", [id]);
   }
 
-  /** Resolve a batch of proposals from explicit 0-1 scores (string decimals). */
-  async resolveProposals(ids: number[], scores: string[], reasoning = ""): Promise<string> {
-    return this.write("resolve_proposals", [ids, scores, reasoning]);
+  /** Resolve open proposals through the validator-backed AI scoring path. */
+  async resolveProposalsAI(ids: number[]): Promise<string> {
+    return this.write("resolve_proposals_ai", [ids]);
   }
 }
 

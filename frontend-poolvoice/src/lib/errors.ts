@@ -30,7 +30,12 @@ export function describeError(e: unknown): string {
   if (lower.includes("pool is empty")) return "The pool is empty. A sponsor needs to fund it first.";
   if (lower.includes("not open")) return "That proposal is no longer open.";
   if (lower.includes("only proposer")) return "Only the proposer can cancel this proposal.";
-  if (lower.includes("length mismatch")) return "Proposal IDs and scores must line up one-to-one.";
+  if (lower.includes("duplicate proposal id")) return "The same proposal was listed twice. Choose each proposal once.";
+  if (lower.includes("proposal not found")) return "That proposal does not exist on this contract.";
+  if (lower.includes("ai score out of range")) return "The validators returned a score outside 0-1. The batch was not funded.";
+  if (lower.includes("must score every proposal")) return "The validators did not cover every proposal. The batch was not funded.";
+  if (lower.includes("ai returned invalid result")) return "The validators returned unreadable output. The batch was not funded; try again.";
+  if (lower.includes("no proposals to resolve")) return "There are no open proposals to score.";
   if (lower.includes("must send gen")) return "Attach a GEN amount to the deposit.";
 
   return raw.length > 220 ? `${raw.slice(0, 220)}…` : raw;
