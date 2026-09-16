@@ -82,7 +82,7 @@ The contract has two test layers:
   resolution workflow (validators mocked), and rejection proofs: the manual
   path is gone, duplicate or stale ids revert, malformed or out-of-bounds AI
   output reverts with nothing moved, foreign or partial coverage reverts, and
-  payouts stay capped by the requested amount and the pool balance. 28 tests.
+  payouts stay capped by the requested amount and the pool balance. 32 tests.
 - **Integration** (`tests/integration/test_pool_voice.py`) deploys to StudioNet
   and exercises the real consensus path: sponsor deposit, proposal from a
   second wallet, validator-backed AI resolve with payout, and cancellation.
@@ -97,6 +97,18 @@ gltest --network studionet tests/integration/test_pool_voice.py -v -s
 # fresh deploy + demo data
 gltest --network studionet tests/deploy_seed_poolvoice.py -v -s
 ```
+
+Rejection proofs go through one helper, `_expect_revert`, which passes only if
+the call raised the contract's own revert type. A call that quietly returns
+fails the test with the value it returned. Each rejection proof then compares
+the pool ledger (balance, funded total, proposal count) and the touched
+proposals against a snapshot taken before the call, so a forbidden call that
+transferred anything is caught even if it also reverted later.
+
+Three more tests read the contract source and fail if that property stops
+holding: the public write surface must be exactly the four known methods, the
+funding routine must be called from one place, and no function other than it
+may write a proposal score, a funded total, or the pool balance.
 
 ## Project layout
 

@@ -1,4 +1,4 @@
-"""Direct-mode tests for PoolVoice — AI-governed DAO fund.
+"""Direct-mode tests for PoolVoice, an AI-governed DAO fund.
 
 The only resolution path is validator-backed: resolve_proposals_ai runs the
 prompt through validators (mocked here as the LLM response) and the contract
@@ -7,13 +7,17 @@ capped by each requested amount. Scores are returned as strings in mocks
 because the direct-mode WASI stub encodes LLM responses through calldata,
 which does not support floats (the real network has no such limit).
 """
+import ast
 import json
+from pathlib import Path
+
 from tests.direct.conftest import to_hex
 
 GEN = 10 ** 18
 DEPOSIT_AMT = 10 * GEN
 PROPOSAL_AMT = 2 * GEN
 AI_PROMPT = r"You are a DAO governance AI"
+CONTRACT_SRC = Path(__file__).resolve().parents[2] / "contracts" / "pool_voice.py"
 
 
 def _deposit(contract, vm, sender, amount=DEPOSIT_AMT):
@@ -34,6 +38,83 @@ def _scores(pid, score, reasoning="ai says"):
     return {str(pid): {"score": score, "reasoning": reasoning}}
 
 
+REVERT_TYPE = "genlayer.gl.vm.UserError"
+
+
+def _error_kind(err):
+    """Dotted class name of an exception, e.g. ``genlayer.gl.vm.UserError``.
+
+    ``genlayer`` only exists inside the WASI runner, so the revert type cannot
+    be imported here; it is identified by name instead.
+    """
+    cls = type(err)
+    return f"{cls.__module__}.{cls.__name__}"
+
+
+def _expect_revert(call, *args, **kwargs):
+    """Run a call that must be rejected, and fail loudly when it is not.
+
+    The earlier version of these tests wrote::
+
+        try:
+            contract.forbidden()
+            assert False, "should have reverted"
+        except Exception:
+            pass
+
+    which caught its own failure assertion: ``AssertionError`` is an
+    ``Exception``, so a call that quietly succeeded still produced a green
+    test, and so did a call that failed for an unrelated reason. Here the
+    exception must be the contract's own revert type, and a call that returns
+    is reported as a failure.
+    """
+    try:
+        returned = call(*args, **kwargs)
+    except Exception as err:
+        if _error_kind(err) != REVERT_TYPE:
+            raise AssertionError(
+                f"expected a revert from {getattr(call, '__name__', call)!r}, "
+                f"got {_error_kind(err)}: {err}"
+            ) from err
+        return err
+    raise AssertionError(
+        f"{getattr(call, '__name__', call)!r} was not rejected; it returned {returned!r}"
+    )
+
+
+def _ledger(contract):
+    """Pool balance, funded total, and proposal count. No rejection may move these."""
+    pool = contract.get_pool()
+    return (
+        int(pool["balance"]),
+        int(pool["total_funded"]),
+        int(pool["total_proposals"]),
+    )
+
+
+def _proposal_state(contract, pid):
+    """Everything a rejected call could have changed on one proposal."""
+    p = contract.get_proposal(pid)
+    return (
+        p["status"],
+        int(p["funded"]),
+        str(p["score"]),
+        int(p["resolved_at"]),
+    )
+
+
+def _rejected_without_moving(contract, call, *args, pids=()):
+    """Assert a call reverts and that no pool money and no proposal changed."""
+    before_ledger = _ledger(contract)
+    before_proposals = {pid: _proposal_state(contract, pid) for pid in pids}
+    err = _expect_revert(call, *args)
+    assert _ledger(contract) == before_ledger, "pool balance or funded total moved"
+    for pid, expected in before_proposals.items():
+        now = _proposal_state(contract, pid)
+        assert now == expected, f"proposal {pid} changed: {expected} -> {now}"
+    return err
+
+
 # ================================================================== deposit
 def test_deposit_sets_sponsor(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
@@ -47,11 +128,10 @@ def test_deposit_reverts_on_zero(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
     direct_vm.sender = direct_alice
     direct_vm.value = 0
-    try:
-        contract.deposit()
-        assert False, "should have reverted"
-    except Exception:
-        pass
+    err = _rejected_without_moving(contract, contract.deposit)
+    direct_vm.value = 0
+    assert "must send GEN" in str(err)
+    assert _ledger(contract) == (0, 0, 0)
 
 
 def test_multiple_deposits(direct_vm, direct_deploy, direct_alice, direct_bob):
@@ -77,33 +157,27 @@ def test_create_reverts_empty_title(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice)
     direct_vm.sender = direct_alice
-    try:
-        contract.create_proposal("", "desc", PROPOSAL_AMT)
-        assert False, "should have reverted"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.create_proposal, "", "desc", PROPOSAL_AMT)
+    assert _ledger(contract) == (DEPOSIT_AMT, 0, 0)
+    assert contract.list_proposals(0, 10) == []
 
 
 def test_create_reverts_exceeds_balance(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice, 1 * GEN)
     direct_vm.sender = direct_alice
-    try:
-        contract.create_proposal("Big", "desc", 5 * GEN)
-        assert False, "should have reverted"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.create_proposal, "Big", "desc", 5 * GEN)
+    assert _ledger(contract) == (1 * GEN, 0, 0)
+    assert contract.list_proposals(0, 10) == []
 
 
 def test_create_reverts_below_minimum(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice)
     direct_vm.sender = direct_alice
-    try:
-        contract.create_proposal("Tiny", "desc", 1)
-        assert False, "should have reverted"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.create_proposal, "Tiny", "desc", 1)
+    assert _ledger(contract) == (DEPOSIT_AMT, 0, 0)
+    assert contract.list_proposals(0, 10) == []
 
 
 # ================================================================ cancel
@@ -121,11 +195,8 @@ def test_cancel_reverts_not_proposer(direct_vm, direct_deploy, direct_alice, dir
     _deposit(contract, direct_vm, direct_alice)
     pid = _create(contract, direct_vm, direct_alice)
     direct_vm.sender = direct_bob
-    try:
-        contract.cancel_proposal(pid)
-        assert False, "should have reverted"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.cancel_proposal, pid, pids=[pid])
+    assert contract.get_proposal(pid)["status"] == "OPEN"
 
 
 # ============================================================== AI resolve
@@ -183,7 +254,7 @@ def test_ai_resolve_by_stranger_uses_validator_score(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
     """Anyone may trigger resolution, but the score comes from the validators,
-    not from the caller — a stranger cannot force a payout or a denial."""
+    not from the caller. A stranger cannot force a payout or a denial."""
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice, 10 * GEN)
     pid = _create(contract, direct_vm, direct_bob, "Neutral", "Whatever", 3 * GEN)
@@ -200,50 +271,71 @@ def test_ai_resolve_by_stranger_uses_validator_score(
 
 # ================================================== security: no manual path
 def test_manual_resolve_path_removed(direct_vm, direct_deploy, direct_alice):
-    """The explicit-scores path is gone: there is no way to set a score by hand."""
+    """The explicit-scores path is gone: there is no way to set a score by hand.
+
+    A missing method raises ``AttributeError``, which is a different failure
+    from a revert, so it is caught on its own rather than through
+    ``Exception``. The contract then has to survive a call whose whole point
+    is to hand it a score, with nothing moving.
+    """
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice)
     pid = _create(contract, direct_vm, direct_alice)
+
+    assert not hasattr(contract, "resolve_proposals"), "manual scoring method exists"
+    before_ledger = _ledger(contract)
+    before_state = _proposal_state(contract, pid)
     try:
         contract.resolve_proposals([pid], ["0.99"])
-        assert False, "manual resolve should not exist"
-    except Exception:
+    except AttributeError:
         pass
+    else:
+        raise AssertionError("resolve_proposals(ids, scores) was callable")
+    assert _ledger(contract) == before_ledger
+    assert _proposal_state(contract, pid) == before_state
+    assert contract.get_proposal(pid)["status"] == "OPEN"
+    assert contract.get_proposal(pid)["funded"] == 0
 
 
 # ================================================== security: bad id lists
 def test_ai_resolve_reverts_empty_ids(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice)
-    try:
-        contract.resolve_proposals_ai([])
-        assert False, "should have reverted"
-    except Exception:
-        pass
+    pid = _create(contract, direct_vm, direct_alice)
+    _rejected_without_moving(contract, contract.resolve_proposals_ai, [], pids=[pid])
 
 
 def test_ai_resolve_reverts_duplicate_ids(direct_vm, direct_deploy, direct_alice):
+    """Repeating an id must not resolve it twice or pay it twice."""
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice)
     pid = _create(contract, direct_vm, direct_alice)
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(pid, "0.9")))
-    try:
-        contract.resolve_proposals_ai([pid, pid])
-        assert False, "duplicate ids should revert"
-    except Exception:
-        pass
+
+    err = _rejected_without_moving(
+        contract, contract.resolve_proposals_ai, [pid, pid], pids=[pid]
+    )
+    assert "duplicate" in str(err)
+    assert contract.get_proposal(pid)["status"] == "OPEN"
+    assert contract.get_proposal(pid)["funded"] == 0
 
 
 def test_ai_resolve_reverts_invalid_id(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice)
-    _create(contract, direct_vm, direct_alice)
+    pid = _create(contract, direct_vm, direct_alice)
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(99, "0.9")))
-    try:
-        contract.resolve_proposals_ai([99])
-        assert False, "unknown id should revert"
-    except Exception:
-        pass
+    err = _rejected_without_moving(contract, contract.resolve_proposals_ai, [99], pids=[pid])
+    assert "not found" in str(err)
+
+
+def test_ai_resolve_reverts_zero_id(direct_vm, direct_deploy, direct_alice):
+    """Ids are 1-based; 0 must not alias anything."""
+    contract = direct_deploy("contracts/pool_voice.py")
+    _deposit(contract, direct_vm, direct_alice)
+    pid = _create(contract, direct_vm, direct_alice)
+    direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(0, "0.9")))
+    _rejected_without_moving(contract, contract.resolve_proposals_ai, [0], pids=[pid])
 
 
 def test_ai_resolve_is_one_time(direct_vm, direct_deploy, direct_alice):
@@ -256,15 +348,19 @@ def test_ai_resolve_is_one_time(direct_vm, direct_deploy, direct_alice):
     assert contract.get_proposal(pid)["status"] == "RESOLVED"
 
     # A second resolution of the same proposal must not double-fund it.
-    before = contract.get_proposal(pid)["funded"]
+    before_ledger = _ledger(contract)
+    before_state = _proposal_state(contract, pid)
+    funded_once = before_state[1]
+    assert funded_once > 0
+
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(pid, "0.9")))
-    try:
-        contract.resolve_proposals_ai([pid])
-        assert False, "stale (already resolved) proposal must revert"
-    except Exception:
-        pass
-    after = contract.get_proposal(pid)["funded"]
-    assert after == before
+    err = _rejected_without_moving(
+        contract, contract.resolve_proposals_ai, [pid], pids=[pid]
+    )
+    assert "not open" in str(err)
+    assert _ledger(contract) == before_ledger
+    assert _proposal_state(contract, pid) == before_state
+    assert contract.get_proposal(pid)["funded"] == funded_once
 
 
 def test_ai_resolve_reverts_cancelled(direct_vm, direct_deploy, direct_alice):
@@ -274,11 +370,9 @@ def test_ai_resolve_reverts_cancelled(direct_vm, direct_deploy, direct_alice):
     direct_vm.sender = direct_alice
     contract.cancel_proposal(pid)
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(pid, "0.9")))
-    try:
-        contract.resolve_proposals_ai([pid])
-        assert False, "cancelled proposal must revert"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.resolve_proposals_ai, [pid], pids=[pid])
+    assert contract.get_proposal(pid)["status"] == "CANCELLED"
+    assert contract.get_proposal(pid)["funded"] == 0
 
 
 # ================================================== security: malformed AI
@@ -288,17 +382,13 @@ def test_ai_resolve_reverts_malformed_json(direct_vm, direct_deploy, direct_alic
     pid = _create(contract, direct_vm, direct_alice, "Malformed", "Bad output", 2 * GEN)
 
     direct_vm.mock_llm(AI_PROMPT, "this is not json")
-    try:
-        contract.resolve_proposals_ai([pid])
-        assert False, "malformed AI output must revert"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.resolve_proposals_ai, [pid], pids=[pid])
 
     # Nothing moved.
     p = contract.get_proposal(pid)
     assert p["status"] == "OPEN"
     assert p["funded"] == 0
-    assert contract.get_pool()["balance"] == 10 * GEN
+    assert _ledger(contract) == (10 * GEN, 0, 1)
 
 
 def test_ai_resolve_reverts_score_above_one(direct_vm, direct_deploy, direct_alice):
@@ -307,16 +397,15 @@ def test_ai_resolve_reverts_score_above_one(direct_vm, direct_deploy, direct_ali
     pid = _create(contract, direct_vm, direct_alice, "Inflated", "Too good", 2 * GEN)
 
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(pid, "1.5")))
-    try:
-        contract.resolve_proposals_ai([pid])
-        assert False, "score above 1 must revert"
-    except Exception:
-        pass
+    err = _rejected_without_moving(
+        contract, contract.resolve_proposals_ai, [pid], pids=[pid]
+    )
+    assert "out of range" in str(err)
 
     p = contract.get_proposal(pid)
     assert p["status"] == "OPEN"
     assert p["funded"] == 0
-    assert contract.get_pool()["balance"] == 10 * GEN
+    assert _ledger(contract) == (10 * GEN, 0, 1)
 
 
 def test_ai_resolve_reverts_negative_score(direct_vm, direct_deploy, direct_alice):
@@ -325,16 +414,12 @@ def test_ai_resolve_reverts_negative_score(direct_vm, direct_deploy, direct_alic
     pid = _create(contract, direct_vm, direct_alice, "Negative", "No", 2 * GEN)
 
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(pid, "-0.1")))
-    try:
-        contract.resolve_proposals_ai([pid])
-        assert False, "negative score must revert"
-    except Exception:
-        pass
+    _rejected_without_moving(contract, contract.resolve_proposals_ai, [pid], pids=[pid])
 
     p = contract.get_proposal(pid)
     assert p["status"] == "OPEN"
     assert p["funded"] == 0
-    assert contract.get_pool()["balance"] == 10 * GEN
+    assert _ledger(contract) == (10 * GEN, 0, 1)
 
 
 def test_ai_resolve_reverts_foreign_id(direct_vm, direct_deploy, direct_alice, direct_bob):
@@ -342,22 +427,22 @@ def test_ai_resolve_reverts_foreign_id(direct_vm, direct_deploy, direct_alice, d
     contract = direct_deploy("contracts/pool_voice.py")
     _deposit(contract, direct_vm, direct_alice, 10 * GEN)
     pid1 = _create(contract, direct_vm, direct_alice, "Requested", "Yes", 2 * GEN)
-    _create(contract, direct_vm, direct_bob, "Sneaky", "Not requested", 2 * GEN)
+    pid2 = _create(contract, direct_vm, direct_bob, "Sneaky", "Not requested", 2 * GEN)
 
     # AI scores the sneaky one and skips the requested one.
     direct_vm.mock_llm(
         AI_PROMPT,
-        json.dumps({str(pid1 + 1): {"score": "0.9", "reasoning": "diversion"}}),
+        json.dumps({str(pid2): {"score": "0.9", "reasoning": "diversion"}}),
     )
-    try:
-        contract.resolve_proposals_ai([pid1])
-        assert False, "foreign id must revert"
-    except Exception:
-        pass
+    _rejected_without_moving(
+        contract, contract.resolve_proposals_ai, [pid1], pids=[pid1, pid2]
+    )
 
     assert contract.get_proposal(pid1)["status"] == "OPEN"
-    assert contract.get_proposal(pid1 + 1)["status"] == "OPEN"
-    assert contract.get_pool()["balance"] == 10 * GEN
+    assert contract.get_proposal(pid2)["status"] == "OPEN"
+    assert contract.get_proposal(pid1)["funded"] == 0
+    assert contract.get_proposal(pid2)["funded"] == 0
+    assert _ledger(contract) == (10 * GEN, 0, 2)
 
 
 def test_ai_resolve_reverts_partial_coverage(direct_vm, direct_deploy, direct_alice):
@@ -368,15 +453,15 @@ def test_ai_resolve_reverts_partial_coverage(direct_vm, direct_deploy, direct_al
     pid2 = _create(contract, direct_vm, direct_alice, "B", "B", 2 * GEN)
 
     direct_vm.mock_llm(AI_PROMPT, json.dumps(_scores(pid1, "0.9")))
-    try:
-        contract.resolve_proposals_ai([pid1, pid2])
-        assert False, "partial coverage must revert"
-    except Exception:
-        pass
+    _rejected_without_moving(
+        contract, contract.resolve_proposals_ai, [pid1, pid2], pids=[pid1, pid2]
+    )
 
     assert contract.get_proposal(pid1)["status"] == "OPEN"
     assert contract.get_proposal(pid2)["status"] == "OPEN"
-    assert contract.get_pool()["balance"] == 10 * GEN
+    assert contract.get_proposal(pid1)["funded"] == 0
+    assert contract.get_proposal(pid2)["funded"] == 0
+    assert _ledger(contract) == (10 * GEN, 0, 2)
 
 
 # ================================================== security: over-limit caps
@@ -447,3 +532,108 @@ def test_list_filter_status(direct_vm, direct_deploy, direct_alice):
     open_only = contract.list_proposals(0, 10, "OPEN")
     assert len(open_only) == 1
     assert open_only[0]["title"] == "P2"
+
+
+# =============================================== source-level fund guards
+def _decorator_path(node):
+    """``gl.public.write.payable`` -> "gl.public.write.payable"."""
+    parts = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+    return ".".join(reversed(parts))
+
+
+def _attribute_path(node, prefix=()):
+    """``self.pool.balance`` -> ("self", "pool", "balance")."""
+    if isinstance(node, ast.Attribute):
+        return _attribute_path(node.value, prefix) + (node.attr,)
+    if isinstance(node, ast.Name):
+        return prefix + (node.id,)
+    return ()
+
+
+def _assign_paths(node):
+    """Attribute paths of every assignment target under ``node``."""
+    paths = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Assign):
+            targets = sub.targets
+        elif isinstance(sub, (ast.AugAssign, ast.AnnAssign)):
+            targets = [sub.target]
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Subscript):
+                target = target.value
+            path = _attribute_path(target)
+            if path:
+                paths.append(path)
+    return paths
+
+
+def _contract_tree():
+    return ast.parse(CONTRACT_SRC.read_text())
+
+
+def test_write_surface_is_exactly_four_methods():
+    """Nothing outside this set can be called to write state or move funds."""
+    writes = set()
+    for node in ast.walk(_contract_tree()):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if any(_decorator_path(d).startswith("gl.public.write") for d in node.decorator_list):
+            writes.add(node.name)
+    assert writes == {
+        "deposit",
+        "create_proposal",
+        "cancel_proposal",
+        "resolve_proposals_ai",
+    }
+
+
+def test_allocator_is_only_reachable_from_the_validator_path():
+    """``_allocate`` is what funds proposals, and only one method calls it."""
+    callers = {}
+    for node in ast.walk(_contract_tree()):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and _attribute_path(sub.func) == (
+                "self",
+                "_allocate",
+            ):
+                callers[node.name] = callers.get(node.name, 0) + 1
+    assert callers == {"resolve_proposals_ai": 1}
+
+
+def test_only_allocate_writes_a_score_or_moves_pool_money():
+    """A score, a funded total, or a balance change is written in one place.
+
+    This is what makes the negative tests above hold for the whole contract
+    surface rather than for the handful of paths they happen to exercise: any
+    new write entry that scores or pays would break this test even before
+    someone proves it with a call.
+    """
+    payout_writers = {}
+    balance_writers = set()
+    for node in ast.walk(_contract_tree()):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for path in _assign_paths(node):
+            joined = ".".join(path)
+            if joined in ("p.score", "p.funded", "self.pool.total_funded"):
+                payout_writers.setdefault(joined, set()).add(node.name)
+            if joined == "self.pool.balance":
+                balance_writers.add(node.name)
+
+    assert payout_writers == {
+        "p.score": {"_allocate"},
+        "p.funded": {"_allocate"},
+        "self.pool.total_funded": {"__init__", "_allocate"},
+    }
+    # deposit only ever adds gl.message.value; nothing else may touch the balance.
+    assert balance_writers == {"deposit", "_allocate"}
